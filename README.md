@@ -18,6 +18,7 @@ TODO:
 - Add rotary encoder support
 - Implement autoguider support
 - Add a park function
+- Add an RTC for when there is no wifi
 - For this repo: more detail and also add some photos and details of how to change it for different mounts.
 
 There are undoubtably many more things that I need to do that I will find out as I complete these.
