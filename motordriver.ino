@@ -1,110 +1,78 @@
 #include <AccelStepper.h>
+#include <AstroCalcs.h>
 
+/*location and time*/
+double longitude = 150.944799;
+double latitude = 31.08;
 int iY, iM, iD, ih, im, is;
+AstroCalcs calcs(longitude, latitude);
+elapsedMillis tdif;
+bool timeset = false;
 
+/*joystick*/
 int joyrapin = A0;
 int joydecpin = A1;
-
 int joyrainit;
 int joydecinit;
-
 int prevjoyra, prevjoydec;
-
 int joyra, joydec;
 
-elapsedMillis tdif;
-
-//due to the reduced precision of doubles at big numbers, I need to 
-
-double LST;
-double longitude = 150.944799;
-
-double jdify(int Y, int M, int D, int h, int m, int s){
-  int A = floor(Y/100);
-  int B = floor(A/4);
-  int C = floor(2-A+B);
-  int E = floor(365.25*(Y+4716));
-  int F = floor(30.6001*(M+1));
-  double JD = double(C) + double(D) + double(E) + double(F) -1524.5 + double(ih)/24.0 + double(im)/1440.0 + double(is)/86400.0;
-  return JD;
-}
-
-double bigt(double jd){
-  return ((jd - 2451545.0) / 36525.0);
-}
-
-double gmst(double t, double jd){
-  double thetazero =  280.46061837 + 360.98564736629 * (jd - 2451545.0) + 0.000387933 * (t*t) - (t*t*t) / 38710000.0;
-  while(thetazero > 360){
-    thetazero -= 360.0;
-  }
-  while(thetazero < 0){
-    thetazero += 360.0;
-  }
-  return thetazero;
-}
-
-/*  Instead of parallel, do asynchronious analogue read i.e. wait a bunch of cycles before the next analogue read*/
-
-const double rasiderealrate = 100;
-const double decsiderealrate = 0;
+/*stuff that matters when moving*/
+double rasiderealrate = 1000;
+double decsiderealrate = 110;
 
 const double decgear = 2000;
 const double ragear = 3200/1.25;
 
 bool moving = false;
 
+
+/*Serial variables*/
 char c;
 String serial;
-
-char empty;
+char emptychar;
 String blank;
 
-double dec = 90.0*decgear;
+/*intital conditions*/
+double dec = 90.0;
 double ra = 0;
-double todec, tora;
-int SPD;
-String dir = "0000";
-String ins = "000";
+double ramotorpos = 0;
+double decmotorpos = 90*decgear;
+double todec, tora, toha, todecmotorpos, toramotorpos;
 bool listening = true;
 bool joystick = false;
 
-int maxspeed = 100000;
+/*
+ * as a note: ramotorpos and toramotorpos are not equal to right ascention in any way! they are absolute motor positions, whereas todec, tora, ra and dec are actual ra and dec positions (independant of time)!
+ */
 
 AccelStepper ramotor(1,2,3);
 AccelStepper decmotor(1,4,5);
 
 void setup() {
+  calcs.setRADEC(ra, dec);
   Serial1.begin(115200);
   Serial.begin(99999999);
   decmotor.setCurrentPosition(90.0*decgear);
   ramotor.setAcceleration(400);
-  ramotor.setMaxSpeed(4000);
+  ramotor.setMaxSpeed(3000);
   decmotor.setAcceleration(400);
-  decmotor.setMaxSpeed(4000);
-  tora = ramotor.currentPosition();
-  ra = ramotor.currentPosition();
-  todec = decmotor.currentPosition();
-  dec = decmotor.currentPosition();
+  decmotor.setMaxSpeed(3000);
+  ramotorpos = ramotor.currentPosition();
+  toramotorpos = ramotor.currentPosition();
+  decmotorpos = decmotor.currentPosition();
+  todecmotorpos = decmotor.currentPosition();
   pinMode(LED_BUILTIN, OUTPUT);
   joyrainit = analogRead(joyrapin);
   joydecinit = analogRead(joydecpin);
 }
 
 void loop() {  
-  if((moving == false) and (joystick = false)){
-    ramotor.runSpeed();
-    decmotor.runSpeed();
-  }
   if(moving == true){
     joyra = 0;
     joydec = 0;
     decmotor.run();
     ramotor.run();
-  }
-  if((moving == false) and (joystick == true)){
-    ramotor.runSpeed();
-    decmotor.runSpeed();
   }
   
   if(moving == false){
@@ -127,6 +95,8 @@ void loop() {
         decmotor.setSpeed(decsiderealrate);
       }
     }
+    ramotor.runSpeed();
+    decmotor.runSpeed();
   }
 
   
@@ -138,7 +108,7 @@ void loop() {
       
       if(c == '%'){
         serial = "";
-        char cc = empty;
+        char cc = emptychar;
         String s = blank;
         while((Serial1.available()) and (cc != '^')){
           cc = Serial1.read();
@@ -154,25 +124,19 @@ void loop() {
         ih = s.substring(8, 10).toInt();
         im = s.substring(10, 12).toInt();
         is = s.substring(12).toInt();
-        
-        if (iM <= 2){
-          iM = iM + 12;
-          iY = iY - 1;
-        }
-        LST = gmst(bigt(jdify(iY, iM, iD, ih, im, is)), jdify(iY, iM, iD, ih, im, is)) + longitude;
+        calcs.updateTime(iY, iM, iD, ih, im, is);
         tdif = 0;
         Serial.println(String(iY)+'\t'+String(iM)+'\t'+String(iD)+'\t'+String(ih)+'\t'+String(im)+'\t'+String(is));
         digitalWrite(LED_BUILTIN, HIGH);
         delay(10);
         digitalWrite(LED_BUILTIN, LOW);
+        timeset = false;
       }
       
       if(serial.endsWith("$R|")){
-        char cc = empty;
+        char cc = emptychar;
         serial = "";
         while(cc != '|'){
-          ramotor.setSpeed(rasiderealrate);
-          decmotor.setSpeed(decsiderealrate);
           ramotor.runSpeed();
           decmotor.runSpeed();
           if(Serial1.available() > 0){
@@ -180,27 +144,19 @@ void loop() {
             serial = serial + cc;
           }
         }
-        if(ih){
+        if(timeset){
           is += tdif / 1000;
         }
         tdif = 0;
-        LST = gmst(bigt(jdify(iY, iM, iD, ih, im, is)), jdify(iY, iM, iD, ih, im, is)) + longitude;
-        Serial.println(LST);
+        calcs.updateTime(iY, iM, iD, ih, im, is);
         tora = double(serial.toFloat());
-        tora = LST - tora;
-        if(tora < -0){
-          tora = tora + 360;
-        }
-        tora = double(tora) * ragear;
         serial = "";
       }
       
       if(serial.endsWith("$D|")){
-        char cc = empty;
+        char cc = emptychar;
         serial = "";
         while(cc != '|'){
-          ramotor.setSpeed(rasiderealrate);
-          decmotor.setSpeed(decsiderealrate);
           ramotor.runSpeed();
           decmotor.runSpeed();
           if(Serial1.available() > 0){
@@ -209,7 +165,6 @@ void loop() {
           }
         }
         todec = double(serial.toFloat());
-        todec = double(todec) * decgear;
         serial = "";
       }
       
@@ -218,41 +173,39 @@ void loop() {
         moving = true;
         ramotor.stop();
         decmotor.stop();
-        ramotor.moveTo(tora);
-        decmotor.moveTo(todec);
-        //Serial.println("|"+String(tora)+'\t'+String(todec)+"|");
-        digitalWrite(LED_BUILTIN, HIGH);
-        if((abs(dec-todec)> 0.001)and(abs(ra-tora)> 0.001)){
-          listening = false;
+        calcs.setRADEC(tora,todec);
+        toha = calcs.getHA();
+        if(toha < -0){
+          toha = toha + 360;
         }
+        calcs.refract();
+        toramotorpos = toha * ragear;
+        todecmotorpos = todec * decgear;
+        ramotor.moveTo(toramotorpos);
+        decmotor.moveTo(todecmotorpos);
+        //Serial.println("|"+String(toha)+'\t'+String(todec)+"|");
+        digitalWrite(LED_BUILTIN, HIGH);
+        listening = false;
       }
     }
   }
 
   /* Updators */
-  dec = decmotor.currentPosition();
-  ra = ramotor.currentPosition();
-  //if((abs(dec-todec)< 0.001)and(abs(ra-tora)< 0.001)){ //check whether using 0.toDouble or (double)0 will work
-  if((int(dec-todec) == 0) and (int(ra-tora) == 0)){
+  decmotorpos = decmotor.currentPosition();
+  ramotorpos = ramotor.currentPosition();
+  dec = decmotorpos/decgear;
+  ra = calcs.getLST() - ramotorpos/ragear;
+  if((int(decmotorpos-todecmotorpos) == 0) and (int(ramotorpos-toramotorpos) == 0)){
     moving = false;
     //Serial.println("stopped");
     digitalWrite(LED_BUILTIN, LOW);
     tora = 0;
     todec = 0;
+    toha = 0;
+    toramotorpos = 0;
+    todecmotorpos = 0;
     listening = true;
     ramotor.setSpeed(rasiderealrate);
     decmotor.setSpeed(decsiderealrate);
   }
-  /*if(millis() % 1000 == 0){  causing weird problem that limits speed.
-    decmotor.run();
-    ramotor.run();
-    is += 1;
-    decmotor.run();
-    ramotor.run();
-    LST = gmst(bigt(jdify(iY, iM, iD, ih, im, is)), jdify(iY, iM, iD, ih, im, is)) + longitude;
-    decmotor.run();
-    ramotor.run();
-    //Serial.println("Debug Acrux (Ra 186.6496 Dec -63.0991): HA: "+String(LST-186.6496));
-    //Serial.println(String(ra)+'\t' + String(dec) + '\t' + String(tora)+'\t' + String(todec)+'\t'+String(ih)+":"+String(im)+":"+String(is));
-  }*/
 }
