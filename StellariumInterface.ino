@@ -25,8 +25,8 @@ LiquidCrystal_PCF8574 lcd(0x27);
 // change the below coordinates to your specific location
 #define LONGITUDE 150.944799
 #define LATITUDE 150.944799
-#define STR_LONGITUDE "150*57"
-#define STR_LATITUDE "-31*05"
+#define STR_LONGITUDE String(150*57)
+#define STR_LATITUDE String(-31*05)
 
 AstroCalcs calcs(LONGITUDE, LATITUDE);
 
@@ -37,7 +37,7 @@ AstroCalcs calcs(LONGITUDE, LATITUDE);
 
 #define COMPUTER_SERIAL Serial
 #define ESP_SERIAL Serial3
-#define MOTOR_DRIVER_SERIAL Serial2
+#define MOTOR_DRIVER_SERIAL Serial1
 
 #define COMPUTER_SERIAL_BAUDRATE 9600
 #define ESP_SERIAL_BAUDRATE 9600
@@ -46,19 +46,19 @@ AstroCalcs calcs(LONGITUDE, LATITUDE);
 #define LCD_ADDRESS 0x27
 
 // other preprocessor directives
-#define YEAR_SEGMENT (0, 4)
-#define MONTH_SEGMENT (4, 6)
-#define DAY_SEGMENT (6, 8)
-#define HOUR_SEGMENT (8, 10)
-#define MINUTE_SEGMENT (10, 12)
-#define SECOND_SEGMENT (12)
+#define YEAR_SEGMENT 0, 4
+#define MONTH_SEGMENT 4, 6
+#define DAY_SEGMENT 6, 8
+#define HOUR_SEGMENT 8, 10
+#define MINUTE_SEGMENT 10, 12
+#define SECOND_SEGMENT 12
 
-#define VERSION "0.4"
+#define VERSION String(0.4)
 
 // setting various variables
 String view = "parked";
 String serial = "";
-char c = '';
+char c;
 bool precision = false;
 int distance = 0;
 int sim = 0;
@@ -218,12 +218,12 @@ void setup()
   is = datetimelcd.substring(SECOND_SEGMENT);
 
   // wait for motor driver board to figure out positions, LST, etc.
-  char cccc = '';
+  char cccc;
   serial = "";
 
   while(cccc != '$')
   {
-    if(MOTOR_DRIVER_SERIAL.available())
+    if(MOTOR_DRIVER_SERIAL.available() > 0)
     {
       cccc = MOTOR_DRIVER_SERIAL.read();
       serial += String(cccc);
@@ -232,7 +232,6 @@ void setup()
 
   // process the recieved information
   serial = serial.substring(0, serial.indexOf("$"));
-
   // update the position, time, LST, etc variables in AstroCalcs (it takes too long to calculate them on the Mega)
   calcs.updateTimeManual(serial);
   serial = "";
@@ -356,7 +355,7 @@ void loop()
     // Set declination
     if(serial.endsWith(":Sd"))
     {
-      char cc = '';
+      char cc;
       int todec = 0;
       
       // read the serial
@@ -581,7 +580,7 @@ void loop()
       lcd.setCursor(0,0);
       lcd.print("Star Chosen:");
       lcd.setCursor(0,1);
-      lcd.print(star);
+      lcd.print(star.substring(0, 20));
       lcd.setCursor(0,2);
       lcd.print("Press \"align\" button");
       lcd.setCursor(0,3);
@@ -590,7 +589,7 @@ void loop()
       serial = "";
 
       // wait until button pressed
-      while(digitalRead(align) != HIGH){
+      while(digitalRead(ALIGN_PIN) != HIGH){
         delay(1);
       }
 
