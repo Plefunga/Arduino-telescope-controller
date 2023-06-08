@@ -12,7 +12,6 @@ The mount that I am making this for is an Anssen Alhena mount, which will have a
 
 TODO:
 - Try the NexStar protocol, it seems a bit better
-- Add stop button (but thats boring!)
 - Add rotary encoder support
 - Implement autoguider support
 - For this repo: more detail and also add some photos and details of how to change it for different mounts.
