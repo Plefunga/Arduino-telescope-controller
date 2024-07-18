@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2023 Nathan Carter
+  Copyright (C) 2024 Nathan Carter
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -8,7 +8,7 @@
 
   This program is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
   GNU General Public License for more details.
 
   To read the full terms and conditions, see https://www.gnu.org/licenses/.
@@ -16,6 +16,9 @@
 
 #include <AccelStepper.h>
 #include <AstroCalcs.h>
+#include "align.h"
+#include "star.h"
+#include "stars.h"
 
 // RTC stuff. Change this for your RTC implementation. Mine is found here:
 // https://www.instructables.com/Interfacing-DS1307-I2C-RTC-With-Arduino/
@@ -32,13 +35,16 @@ RTC_DS1307 rtc;
 #define MINUTE_SEGMENT 10, 12
 #define SECOND_SEGMENT 12
 
+#define HA_OFFSET 180 // difference between motor pos and the hour angle of that position times motor gear ratio
+
 // for debugging -- prints all debug messages to the COMPUTER_DEBUG_SERIAL
 #define DEBUG true
 #define DEBUG_PRINT_MOTOR_POSITIONS 1 // uncomment if no motors attached
+//#define DEBUG_OUTPUT_POSITIONS 1 // uncomment if you want to output motor positions to serial 2
 
 // location -- change this for your site
 #define LONGITUDE 150.944799
-#define LATITUDE 31.078821
+#define LATITUDE -31.078821
 
 // general hardware stuff -- change to suit your needs
 #define STELLARIUM_INTERFACE_SERIAL Serial1
@@ -51,8 +57,11 @@ RTC_DS1307 rtc;
 #define JOYSTICK_SENSITIVITY 10
 #define JOYSTICK_INCREMENTS 10
 
-#define DEC_GEAR_RATIO 2000 // in steps per degree
-#define RA_GEAR_RATIO 2560 // in steps per degree
+#define DEC_GEAR_RATIO 4000 //2000 // in steps per degree
+#define RA_GEAR_RATIO 5000 //5120 //2560 // in steps per degree
+
+// number of stars for alignment
+#define N_STARS 123
 
 
 // intitialise Astrocalcs
@@ -112,6 +121,11 @@ void setup()
   // Initialise Serial
   STELLARIUM_INTERFACE_SERIAL.begin(115200); 
   COMPUTER_DEBUG_SERIAL.begin(99999999); // an arbitrarily fast speed, as the teensy runs at full USB speed anyway
+
+  #ifdef DEBUG_OUTPUT_POSITIONS
+  Serial2.begin(115200);
+  #endif
+  
   Info("Serial Initialised");
   if(DEBUG){
     Info("Debug set to true. All debug messages will be sent to Serial (unless slewing at high speeds");
@@ -125,10 +139,18 @@ void setup()
   // set motor speeds, acceleration rates and max speeds
   ramotor.setSpeed(rasiderealrate);
   decmotor.setSpeed(decsiderealrate);
+  #ifndef DEBUG_PRINT_MOTOR_POSITIONS
   ramotor.setAcceleration(400);
-  ramotor.setMaxSpeed(3000);
+  ramotor.setMaxSpeed(4000); //2500
   decmotor.setAcceleration(400);
-  decmotor.setMaxSpeed(3000);
+  decmotor.setMaxSpeed(4000); //2500
+  
+  #else
+  ramotor.setAcceleration(6400);
+  ramotor.setMaxSpeed(32000);
+  decmotor.setAcceleration(6400);
+  decmotor.setMaxSpeed(32000);
+  #endif
 
   // Initialise Wire and RTC
   Wire.begin();
@@ -148,6 +170,7 @@ void setup()
   DateTime rtctime = rtc.now();
 
   Info("RTC initialised");
+  
 
   // set time to RTC time
   int iY = rtctime.year();
@@ -164,14 +187,16 @@ void setup()
   
   // calculate the ra and dec of the park position
   Info("Calculating inital position...");
-  calcs.setAltAz(0, 90);
+  calcs.setAltAz(0, 270);
 
   ra = calcs.getRA();
   dec = calcs.getDec();
 
   // calculate the gear position of the ra and dec
-  ramotorpos = calcs.getHA()*RA_GEAR_RATIO;
+  ramotorpos = limit((calcs.getHA()-HA_OFFSET), 360)*RA_GEAR_RATIO;
   decmotorpos = dec*DEC_GEAR_RATIO;
+
+  restrict(&ramotorpos, &decmotorpos);
 
   // set the current position of the motors to this
   decmotor.setCurrentPosition(decmotorpos);
@@ -400,23 +425,32 @@ void loop()
         // correct for precession, refraction, etc. to get JNOW
         calcs.calcPosJ2000(tora, todec);
 
+        // print corrected coords to console
+        if(DEBUG)
+        {
+          int deg, min;
+          double sec;
+          calcs.curr_pos.raHMS(&deg, &min, &sec);
+          Info("Precessed coords: ");
+          Info(String(deg) + ":" + String(min) + ":" + String(sec));
+          calcs.curr_pos.decDMS(&deg, &min, &sec);
+          Info(String(deg) + ":" + String(min) + ":" + String(sec));
+        }
+
         // get actual positions
         toha = calcs.getHA();
         todec = calcs.getDec();
 
         // correct for any accidental range mishaps
-        if(toha < -0){
-          toha = toha + 360;
-        }
-        if(abs((calcs.getLST()-ra) - toha) > abs((calcs.getLST()-ra) - (toha-360))){
-          toha = toha - 360;
-        }
+        toha = limit(toha, 360);
 
         // set gear positions
-        toramotorpos = toha * RA_GEAR_RATIO;
+        toramotorpos = limit(toha-HA_OFFSET, 360) * RA_GEAR_RATIO;
         todecmotorpos = todec * DEC_GEAR_RATIO;
         
         // move to gear positions
+
+        restrict(&toramotorpos, &todecmotorpos);
         ramotor.moveTo(toramotorpos);
         decmotor.moveTo(todecmotorpos);
 
@@ -456,7 +490,7 @@ void loop()
 
         // set the position to the park position
         Info("Setting position...");
-        calcs.setAltAz(0, 90);
+        calcs.setAltAz(0, 270);
 
         // get the ra and dec of that park position (no need to correct for refraction)
         ra = calcs.getRA();
@@ -464,13 +498,13 @@ void loop()
         toha = calcs.getHA();
 
         // correct for any range mishaps
-        if(toha < -0.0){
-          toha = toha + 360;
-        }
+        toha = limit(toha, 360.0);
 
         // calculate the target gear positions
-        toramotorpos = toha * RA_GEAR_RATIO;
+        toramotorpos = limit(toha - HA_OFFSET, 360)* RA_GEAR_RATIO;
         todecmotorpos = todec * DEC_GEAR_RATIO;
+
+        restrict(&toramotorpos, &todecmotorpos);
 
         // slew
         Info("Set Position. Slewing...");
@@ -493,6 +527,47 @@ void loop()
         // clear serial variable for reuse
         serial = "";
 
+        // if we are set as the local processor, we need to recieve the align index and return the star
+        // clear serial variables for reuse
+        char cc = emptychar;
+
+        // read serial until end of command
+        while(cc != '|')
+        {
+          // run motors
+          ramotor.runSpeed();
+          decmotor.runSpeed();
+
+          // read serial if it is available
+          if(STELLARIUM_INTERFACE_SERIAL.available() > 0)
+          {
+            cc = STELLARIUM_INTERFACE_SERIAL.read();
+            if(isDigit(cc))
+            {
+              serial = serial + cc;
+            }
+          }
+        }
+        Info(serial);
+
+        // if we recieved a number, we only clicked next.
+        if(serial.length() > 0)
+        {
+          digitalWrite(LED_BUILTIN, HIGH);
+          int align_index = int(serial.toInt());
+          // get align options
+          Star stars[N_STARS];
+
+          parse_json(align_stars_json, stars, N_STARS);
+          sort_stars(calcs, stars, N_STARS);
+
+          String star_string = "#"+ String(stars[align_index].name) + "|" +String(stars[align_index].ra) + "|" + String(stars[align_index].dec) +"~";
+          Info(star_string);
+          STELLARIUM_INTERFACE_SERIAL.print(star_string);
+          digitalWrite(LED_BUILTIN, LOW);
+          align = false;
+        }
+
         // if we were already doing alignment
         if(align == true)
         {
@@ -500,8 +575,11 @@ void loop()
           updateRTCtime(rtc.now());
 
           // set the current position to the position it should be at
-          ramotor.setCurrentPosition((calcs.getLST()-alignra)*RA_GEAR_RATIO);
-          decmotor.setCurrentPosition(aligndec*DEC_GEAR_RATIO);
+          double currramotorpos = limit(((calcs.getLST()-alignra)+HA_OFFSET)*RA_GEAR_RATIO, 360*RA_GEAR_RATIO);
+          double currdecmotorpos = aligndec*DEC_GEAR_RATIO;
+          restrict(&currramotorpos, &currdecmotorpos);
+          ramotor.setCurrentPosition(currramotorpos);
+          decmotor.setCurrentPosition(currdecmotorpos);
 
           // update the motor position variables
           decmotorpos = decmotor.currentPosition();
@@ -509,19 +587,23 @@ void loop()
 
           // update the ra and dec variables
           dec = decmotorpos/DEC_GEAR_RATIO;
-          ra = calcs.getLST() - ramotorpos/RA_GEAR_RATIO;
+          ra = limit(calcs.getLST() - (ramotorpos)/RA_GEAR_RATIO + HA_OFFSET, 360);
+
+          unrestrict(&ra, &dec);
 
           // we are no longer aligning
           align = false;
           Info("Align command recieved. Position calibrated.");
         }
-
         else
         {
-          // next time this command is recieved, we are actually setting the position
+          // next time this command is recieved, we are actually setting the position (or we clicked next)
           align = true;
+
           Info("Align command recieved. Waiting for positions...");
         }
+
+        serial = "";
       }
     }
   }
@@ -531,7 +613,9 @@ void loop()
   ramotorpos = ramotor.currentPosition();
 
   dec = decmotorpos/DEC_GEAR_RATIO;
-  ra = calcs.getLST() - ramotorpos/RA_GEAR_RATIO;
+  ra = calcs.getLST() - ramotorpos/RA_GEAR_RATIO + HA_OFFSET;
+
+  unrestrict(&ra, &dec);
 
   // as floats don't equate consitently, convert to int and then compare
   // ramotorpos and decmotorpos are very large as they are actual motor
@@ -560,7 +644,53 @@ void loop()
       Info("Parked. Turn off power.");
       
       // do nothing
-      while(true){}
+      serial = "";
+      while(parking){
+        if(STELLARIUM_INTERFACE_SERIAL.available())
+        {
+          // todo -- find out why this is here
+          delay(100);
+
+          // read serial
+          c = STELLARIUM_INTERFACE_SERIAL.read();
+          serial = serial + String(c);
+
+          if(serial.endsWith("$P"))
+          {
+            // unpark
+            parking = false;
+            serial = "";
+          }
+        }
+      }
+      updateRTCtime(rtc.now());
+
+      // calculate the ra and dec of the park position
+      Info("Calculating inital position...");
+      calcs.setAltAz(0, 270);
+
+      ra = calcs.getRA();
+      dec = calcs.getDec();
+
+      // calculate the gear position of the ra and dec
+      ramotorpos = limit((calcs.getHA()-HA_OFFSET), 360)*RA_GEAR_RATIO;
+      decmotorpos = dec*DEC_GEAR_RATIO;
+
+      restrict(&ramotorpos, &decmotorpos);
+
+      // set the current position of the motors to this
+      decmotor.setCurrentPosition(decmotorpos);
+      ramotor.setCurrentPosition(ramotorpos);
+
+      // set motor position variables
+      ramotorpos = ramotor.currentPosition();
+      toramotorpos = ramotor.currentPosition();
+      decmotorpos = decmotor.currentPosition();
+      todecmotorpos = decmotor.currentPosition();
+
+      Info("Initial position calculated:");
+      Info("RA: " + String(ra));
+      Info("DEC: " + String(dec));
     }
     // set speed to sidereal rate
     ramotor.setSpeed(rasiderealrate);
@@ -581,8 +711,21 @@ void loop()
     int im = rtctime.minute();
     int is = rtctime.second();
     // print motor positions -- change this how you like it
-    COMPUTER_DEBUG_SERIAL.println(String(ra)+'\t' + String(dec) + '\t' + String(tora)+'\t' + String(todec)+'\t'+String(ih)+":"+String(im)+":"+String(is) +'\t'+String(ramotorpos)+" "+String(decmotorpos));
+    int rah, ram, decd, decm;
+    double ras, decs;
+    calcs.curr_pos.raHMS(&rah, &ram, &ras);
+    calcs.curr_pos.decDMS(&decd, &decm, &decs);
+    //COMPUTER_DEBUG_SERIAL.println(String(ih)+":"+String(im)+":"+String(is) +'\t'+String(ra)+'\t' + String(dec) + '\t' + String(tora)+'\t' + String(todec)+'\t'+String(ramotorpos/RA_GEAR_RATIO)+'\t'+String(decmotorpos/DEC_GEAR_RATIO));
+    COMPUTER_DEBUG_SERIAL.println(String(ih)+":"+String(im)+":"+String(is) +'\t'+String(rah)+":"+String(ram)+":"+String(ras)+'\t' + String(decd)+":"+String(decm)+":"+String(decs) + '\t' + String(tora)+'\t' + String(todec)+'\t'+String(ramotorpos/RA_GEAR_RATIO)+'\t'+String(decmotorpos/DEC_GEAR_RATIO));
+    
     delay(1);
+  }
+  #endif
+
+  #ifdef DEBUG_OUTPUT_POSITIONS
+  if(millis() % 100 == 0)
+  {
+    Serial2.println(String(ramotorpos/RA_GEAR_RATIO)+'\t'+String(decmotorpos/DEC_GEAR_RATIO));
   }
   #endif
 }
@@ -601,6 +744,44 @@ void updateRTCtime(DateTime rtctime)
   calcs.updateTime(iY, iM, iD, ih, im, is);
 }
 
+/******   RESTRICT FUNCTION   ******/
+void restrict(double *rmp, double *dmp)
+{
+  *rmp = limit(*rmp, 360*RA_GEAR_RATIO);
+  if(*rmp > 180*RA_GEAR_RATIO)
+  {
+    *dmp = (-180) * DEC_GEAR_RATIO - *dmp;
+    *rmp -= 180*RA_GEAR_RATIO;
+  }
+}
+
+void unrestrict(double *rp, double *dp)
+{
+  if(*dp < -90)
+  {
+    *dp = (-180) - *dp;
+    *rp += 180;
+  }
+}
+
+double limit(double x, double m)
+{
+  int diff = floor(x/m);
+
+  for(int i = 0; i < diff; i++)
+  {
+      x -= m;
+  }
+
+  diff = ceil(-x/m);
+
+  for(int i = 0; i < diff; i++)
+  {
+      x += m;
+  }
+  return x;
+}
+
 /******   DEBUG PRINT FUNCTIONS   ******/
 void Info(String s)
 {
@@ -611,13 +792,15 @@ void Info(String s)
 
 void Error(String s)
 {
-  if(DEBUG){
+  if(DEBUG)
+  {
     COMPUTER_DEBUG_SERIAL.println("[ERROR] "+s);
   }
 }
 void Warn(String s)
 {
-  if(DEBUG){
+  if(DEBUG)
+  {
     COMPUTER_DEBUG_SERIAL.println("[WARN] "+s);
   }
 }
